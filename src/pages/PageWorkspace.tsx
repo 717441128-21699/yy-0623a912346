@@ -1,9 +1,9 @@
 import { useState, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Plus, Trash2, Check, Upload, MessageSquare, AlertCircle, Send } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Check, Upload, MessageSquare, AlertCircle, Send, History } from 'lucide-react'
 import { useStore } from '@/store/useStore'
-import type { PageStatus, CommentType } from '@/types'
-import { STATUS_LABELS, COMMENT_TYPE_LABELS } from '@/types'
+import type { PageStatus, CommentType, TaskAction } from '@/types'
+import { STATUS_LABELS, COMMENT_TYPE_LABELS, ACTION_LABELS } from '@/types'
 
 const FLOW_STEPS: PageStatus[] = [
   'pending_translate', 'translating', 'pending_proofread',
@@ -19,6 +19,22 @@ const COMMENT_TYPE_COLORS: Record<CommentType, string> = {
   naming: 'bg-blue-500/20 text-blue-300',
   meme_note: 'bg-purple-500/20 text-purple-300',
   other: 'bg-gray-500/20 text-gray-300',
+}
+
+const ACTION_COLORS: Record<TaskAction, string> = {
+  claimed: '#0f3460',
+  submitted: '#16c79a',
+  released: '#f5a623',
+  approved: '#16c79a',
+  rejected: '#e94560',
+  comment_added: '#9b59b6',
+  typeset_uploaded: '#16c79a',
+}
+
+function formatTimestamp(ts: string) {
+  const d = new Date(ts)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 export default function PageWorkspace() {
@@ -216,76 +232,134 @@ export default function PageWorkspace() {
     </div>
   )
 
-  const renderTypesetterPanel = () => (
-    <div className="space-y-3">
-      <div className="bg-dark-card rounded-lg p-3 space-y-2">
-        <h3 className="text-txt-secondary text-sm font-medium">台词列表</h3>
-        {page.dialogues.map((d) => (
-          <div key={d.id} className="flex items-center gap-2 text-sm">
-            <span className="text-txt-muted shrink-0">{d.index}.</span>
-            <span className="text-txt-primary">{d.text || '(空)'}</span>
-            {d.isOnomatopoeia && (
-              <span className="text-xs bg-accent-orange/20 text-accent-orange px-1.5 py-0.5 rounded">拟声词</span>
-            )}
-          </div>
-        ))}
+  const renderTypesetterPanel = () => {
+    const approvedDialogues = page.dialogues.filter(d => d.status === 'approved')
+    return (
+      <div className="space-y-3">
+        <div className="bg-dark-card rounded-lg p-3 space-y-2">
+          <h3 className="text-txt-secondary text-sm font-medium">台词列表</h3>
+          {approvedDialogues.length === 0 ? (
+            <p className="text-txt-muted text-sm">暂无已通过校对的台词</p>
+          ) : (
+            approvedDialogues.map((d) => (
+              <div key={d.id} className="flex items-center gap-2 text-sm">
+                <span className="text-txt-muted shrink-0">{d.index}.</span>
+                <span className="text-txt-primary">{d.text || '(空)'}</span>
+                {d.isOnomatopoeia && (
+                  <span className="text-xs bg-accent-orange/20 text-accent-orange px-1.5 py-0.5 rounded">拟声词</span>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+        <div className="bg-dark-card rounded-lg p-3 space-y-2">
+          <h3 className="text-txt-secondary text-sm font-medium">上传成品图</h3>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleFileUpload}
+            className="hidden"
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="w-full py-8 rounded-lg border-2 border-dashed border-border-dark hover:border-accent-green transition-colors flex flex-col items-center gap-2 text-txt-muted hover:text-accent-green"
+          >
+            <Upload className="w-6 h-6" />
+            <span className="text-sm">点击上传成品图</span>
+          </button>
+          {typesetPreview && (
+            <img src={typesetPreview} alt="成品预览" className="w-full rounded-lg" />
+          )}
+        </div>
       </div>
-      <div className="bg-dark-card rounded-lg p-3 space-y-2">
-        <h3 className="text-txt-secondary text-sm font-medium">上传成品图</h3>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*"
-          onChange={handleFileUpload}
-          className="hidden"
-        />
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          className="w-full py-8 rounded-lg border-2 border-dashed border-border-dark hover:border-accent-green transition-colors flex flex-col items-center gap-2 text-txt-muted hover:text-accent-green"
-        >
-          <Upload className="w-6 h-6" />
-          <span className="text-sm">点击上传成品图</span>
-        </button>
-        {typesetPreview && (
-          <img src={typesetPreview} alt="成品预览" className="w-full rounded-lg" />
-        )}
-      </div>
-    </div>
-  )
+    )
+  }
 
-  const renderViewOnlyPanel = () => (
-    <div className="space-y-3">
-      {page.dialogues.map((d) => {
-        const comments = page.proofreadComments.filter((c) => c.dialogueId === d.id)
-        return (
-          <div key={d.id} className="bg-dark-card rounded-lg p-3 space-y-1.5">
-            <div className="flex items-start gap-2 text-sm">
-              <span className="text-txt-muted shrink-0">{d.index}.</span>
-              <span className="text-txt-primary">{d.text || '(空)'}</span>
-              {d.isOnomatopoeia && (
-                <span className="text-xs bg-accent-orange/20 text-accent-orange px-1.5 py-0.5 rounded">拟声词</span>
+  const renderViewOnlyPanel = () => {
+    const visibleDialogues = currentUser.role === 'typesetter'
+      ? page.dialogues.filter(d => d.status === 'approved')
+      : page.dialogues
+    return (
+      <div className="space-y-3">
+        {visibleDialogues.map((d) => {
+          const comments = page.proofreadComments.filter((c) => c.dialogueId === d.id)
+          return (
+            <div key={d.id} className="bg-dark-card rounded-lg p-3 space-y-1.5">
+              <div className="flex items-start gap-2 text-sm">
+                <span className="text-txt-muted shrink-0">{d.index}.</span>
+                <span className="text-txt-primary">{d.text || '(空)'}</span>
+                {d.isOnomatopoeia && (
+                  <span className="text-xs bg-accent-orange/20 text-accent-orange px-1.5 py-0.5 rounded">拟声词</span>
+                )}
+              </div>
+              {comments.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 ml-5">
+                  {comments.map((c) => (
+                    <span key={c.id} className={`text-xs px-2 py-0.5 rounded-full ${COMMENT_TYPE_COLORS[c.type]}`}>
+                      {COMMENT_TYPE_LABELS[c.type]}：{c.content}
+                    </span>
+                  ))}
+                </div>
               )}
             </div>
-            {comments.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 ml-5">
-                {comments.map((c) => (
-                  <span key={c.id} className={`text-xs px-2 py-0.5 rounded-full ${COMMENT_TYPE_COLORS[c.type]}`}>
-                    {COMMENT_TYPE_LABELS[c.type]}：{c.content}
-                  </span>
-                ))}
-              </div>
-            )}
+          )
+        })}
+        {page.typesetImage && (
+          <div className="bg-dark-card rounded-lg p-3 space-y-2">
+            <h3 className="text-txt-secondary text-sm font-medium">成品图</h3>
+            <img src={page.typesetImage} alt="成品图" className="w-full rounded-lg" />
           </div>
-        )
-      })}
-      {page.typesetImage && (
-        <div className="bg-dark-card rounded-lg p-3 space-y-2">
-          <h3 className="text-txt-secondary text-sm font-medium">成品图</h3>
-          <img src={page.typesetImage} alt="成品图" className="w-full rounded-lg" />
+        )}
+      </div>
+    )
+  }
+
+  const renderTimeline = () => {
+    const logs = store.getTaskLogsForPage(pageId)
+    return (
+      <div className="bg-dark-card rounded-xl p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <History className="w-4 h-4 text-txt-secondary" />
+          <h2 className="text-txt-primary font-semibold">操作记录</h2>
         </div>
-      )}
-    </div>
-  )
+        {logs.length === 0 ? (
+          <p className="text-txt-muted text-sm">暂无操作记录</p>
+        ) : (
+          <div className="space-y-0">
+            {logs.map((log, i) => {
+              const member = store.getMember(log.memberId)
+              const color = ACTION_COLORS[log.action]
+              const isLast = i === logs.length - 1
+              return (
+                <div key={log.id} className="flex gap-3">
+                  <div className="flex flex-col items-center">
+                    <div
+                      className="w-3 h-3 rounded-full shrink-0 mt-1.5"
+                      style={{ backgroundColor: color }}
+                    />
+                    {!isLast && <div className="w-px flex-1 bg-border-dark" />}
+                  </div>
+                  <div className={`flex-1 ${isLast ? '' : 'pb-4'}`}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-txt-primary text-sm font-medium">
+                        {member?.name ?? '组长'}
+                      </span>
+                      <span className="text-txt-secondary text-sm">{ACTION_LABELS[log.action]}</span>
+                    </div>
+                    {log.detail && (
+                      <p className="text-txt-muted text-xs mt-0.5">{log.detail}</p>
+                    )}
+                    <p className="text-txt-muted text-xs mt-0.5">{formatTimestamp(log.timestamp)}</p>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    )
+  }
 
   const renderWorkPanel = () => {
     if (page.status === 'completed') return renderViewOnlyPanel()
@@ -368,6 +442,8 @@ export default function PageWorkspace() {
           {renderWorkPanel()}
         </div>
       </div>
+
+      {renderTimeline()}
     </div>
   )
 }

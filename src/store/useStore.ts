@@ -12,6 +12,7 @@ interface AppState {
   getMember: (id: string) => Member | undefined
   getAllPages: (projectId: string) => Page[]
   getPage: (projectId: string, pageId: string) => { page: Page; chapterId: string } | undefined
+  getTaskLogsForPage: (pageId: string) => TaskLog[]
 
   claimTask: (pageId: string, memberId: string) => boolean
   releaseTask: (pageId: string, memberId: string) => void
@@ -25,10 +26,14 @@ interface AppState {
   addProofreadComment: (pageId: string, comment: Omit<ProofreadComment, 'id' | 'createdAt'>) => void
   removeProofreadComment: (pageId: string, commentId: string) => void
   confirmComplete: (pageId: string) => void
+  batchAssign: (pageIds: string[], memberId: string) => number
+  resetStalePages: (pageIds: string[]) => number
+  leaderAssign: (pageId: string, memberId: string) => boolean
 
   getPagesByStatus: (projectId: string, status: PageStatus) => Page[]
   getPagesByAssignee: (projectId: string, memberId: string) => Page[]
   getOverduePages: (projectId?: string) => Page[]
+  getOverduePagesDetailed: (projectId?: string) => { page: Page; projectId: string; chapterName: string; isAssigned: boolean }[]
   getBottleneckStats: (projectId: string) => { translate: number; proofread: number; typeset: number }
   getMemberTaskCount: (memberId: string) => { active: number; completed: number }
 
@@ -81,10 +86,29 @@ function updatePage(projects: Project[], pageId: string, updater: (page: Page) =
   }))
 }
 
+const STORAGE_VERSION = 'v2'
 const stored = loadFromStorage()
-const initialProjects = stored?.projects ?? MOCK_PROJECTS
-const initialMembers = stored?.members ?? MOCK_MEMBERS
-const initialTaskLogs = stored?.taskLogs ?? MOCK_TASK_LOGS
+const storedVersion = localStorage.getItem(STORAGE_KEY + '_version')
+const needsReset = storedVersion !== STORAGE_VERSION
+const initialProjects = (stored && !needsReset) ? stored.projects : MOCK_PROJECTS
+const initialMembers = (stored && !needsReset) ? stored.members : MOCK_MEMBERS
+const initialTaskLogs = (stored && !needsReset) ? stored.taskLogs : MOCK_TASK_LOGS
+if (needsReset) {
+  localStorage.setItem(STORAGE_KEY + '_version', STORAGE_VERSION)
+}
+
+function makeLog(pageId: string, chapterId: string, projectId: string, memberId: string, action: TaskLog['action'], detail?: string): TaskLog {
+  return {
+    id: generateId(),
+    pageId,
+    chapterId,
+    projectId,
+    memberId,
+    action,
+    detail,
+    timestamp: new Date().toISOString(),
+  }
+}
 
 export const useStore = create<AppState>((set, get) => ({
   projects: initialProjects,
@@ -112,6 +136,10 @@ export const useStore = create<AppState>((set, get) => ({
     return undefined
   },
 
+  getTaskLogsForPage: (pageId) => {
+    return get().taskLogs.filter(l => l.pageId === pageId).sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+  },
+
   claimTask: (pageId, memberId) => {
     const found = findPageInProjects(get().projects, pageId)
     if (!found) return false
@@ -131,15 +159,7 @@ export const useStore = create<AppState>((set, get) => ({
     if (role === 'proofreader') newStatus = 'proofreading'
     if (role === 'typesetter') newStatus = 'typesetting'
 
-    const newLog: TaskLog = {
-      id: generateId(),
-      pageId,
-      chapterId: found.chapterId,
-      projectId: get().projects[found.projectIndex].id,
-      memberId,
-      action: 'claimed',
-      timestamp: new Date().toISOString().split('T')[0],
-    }
+    const newLog = makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, memberId, 'claimed')
 
     const newProjects = updatePage(get().projects, pageId, p => ({
       ...p,
@@ -165,15 +185,7 @@ export const useStore = create<AppState>((set, get) => ({
     if (page.status === 'proofreading') newStatus = 'pending_proofread'
     if (page.status === 'typesetting') newStatus = 'pending_typeset'
 
-    const newLog: TaskLog = {
-      id: generateId(),
-      pageId,
-      chapterId: found.chapterId,
-      projectId: get().projects[found.projectIndex].id,
-      memberId,
-      action: 'released',
-      timestamp: new Date().toISOString().split('T')[0],
-    }
+    const newLog = makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, memberId, 'released')
 
     const newProjects = updatePage(get().projects, pageId, p => ({
       ...p,
@@ -191,15 +203,7 @@ export const useStore = create<AppState>((set, get) => ({
     const found = findPageInProjects(get().projects, pageId)
     if (!found) return
 
-    const newLog: TaskLog = {
-      id: generateId(),
-      pageId,
-      chapterId: found.chapterId,
-      projectId: get().projects[found.projectIndex].id,
-      memberId: found.page.assigneeId ?? '',
-      action: 'submitted',
-      timestamp: new Date().toISOString().split('T')[0],
-    }
+    const newLog = makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, found.page.assigneeId ?? '', 'submitted', `${dialogues.filter(d => d.text).length} 条台词`)
 
     const newProjects = updatePage(get().projects, pageId, p => ({
       ...p,
@@ -218,15 +222,7 @@ export const useStore = create<AppState>((set, get) => ({
     const found = findPageInProjects(get().projects, pageId)
     if (!found) return
 
-    const newLog: TaskLog = {
-      id: generateId(),
-      pageId,
-      chapterId: found.chapterId,
-      projectId: get().projects[found.projectIndex].id,
-      memberId: found.page.assigneeId ?? '',
-      action: 'approved',
-      timestamp: new Date().toISOString().split('T')[0],
-    }
+    const newLog = makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, found.page.assigneeId ?? '', 'approved')
 
     const newProjects = updatePage(get().projects, pageId, p => ({
       ...p,
@@ -245,15 +241,7 @@ export const useStore = create<AppState>((set, get) => ({
     const found = findPageInProjects(get().projects, pageId)
     if (!found) return
 
-    const newLog: TaskLog = {
-      id: generateId(),
-      pageId,
-      chapterId: found.chapterId,
-      projectId: get().projects[found.projectIndex].id,
-      memberId: found.page.assigneeId ?? '',
-      action: 'rejected',
-      timestamp: new Date().toISOString().split('T')[0],
-    }
+    const newLog = makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, found.page.assigneeId ?? '', 'rejected', `${comments.length} 条批注`)
 
     const newProjects = updatePage(get().projects, pageId, p => ({
       ...p,
@@ -272,15 +260,7 @@ export const useStore = create<AppState>((set, get) => ({
     const found = findPageInProjects(get().projects, pageId)
     if (!found) return
 
-    const newLog: TaskLog = {
-      id: generateId(),
-      pageId,
-      chapterId: found.chapterId,
-      projectId: get().projects[found.projectIndex].id,
-      memberId: found.page.assigneeId ?? '',
-      action: 'submitted',
-      timestamp: new Date().toISOString().split('T')[0],
-    }
+    const newLog = makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, found.page.assigneeId ?? '', 'typeset_uploaded')
 
     const newProjects = updatePage(get().projects, pageId, p => ({
       ...p,
@@ -329,6 +309,9 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   addProofreadComment: (pageId, comment) => {
+    const found = findPageInProjects(get().projects, pageId)
+    if (!found) return
+
     const newComment: ProofreadComment = {
       ...comment,
       id: generateId(),
@@ -339,8 +322,12 @@ export const useStore = create<AppState>((set, get) => ({
       proofreadComments: [...p.proofreadComments, newComment],
       updatedAt: new Date().toISOString().split('T')[0],
     }))
-    saveToStorage({ projects: newProjects, members: get().members, taskLogs: get().taskLogs })
-    set({ projects: newProjects })
+
+    const newLog = makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, get().currentUserId, 'comment_added', comment.content)
+
+    const newState = { projects: newProjects, taskLogs: [...get().taskLogs, newLog] }
+    saveToStorage({ projects: newState.projects, members: get().members, taskLogs: newState.taskLogs })
+    set(newState)
   },
 
   removeProofreadComment: (pageId, commentId) => {
@@ -364,6 +351,113 @@ export const useStore = create<AppState>((set, get) => ({
     set({ projects: newProjects })
   },
 
+  batchAssign: (pageIds, memberId) => {
+    const member = get().members.find(m => m.id === memberId)
+    if (!member) return 0
+
+    let count = 0
+    const newLogs: TaskLog[] = []
+    let newProjects = get().projects
+
+    for (const pageId of pageIds) {
+      const found = findPageInProjects(newProjects, pageId)
+      if (!found) continue
+      const page = found.page
+      if (page.assigneeId) continue
+
+      let newStatus: PageStatus = page.status
+      if (member.role === 'translator' && page.status === 'pending_translate') newStatus = 'translating'
+      else if (member.role === 'proofreader' && page.status === 'pending_proofread') newStatus = 'proofreading'
+      else if (member.role === 'typesetter' && page.status === 'pending_typeset') newStatus = 'typesetting'
+      else continue
+
+      newProjects = updatePage(newProjects, pageId, p => ({
+        ...p,
+        status: newStatus,
+        assigneeId: memberId,
+        updatedAt: new Date().toISOString().split('T')[0],
+      }))
+
+      newLogs.push(makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, memberId, 'claimed'))
+      count++
+    }
+
+    if (count > 0) {
+      const newState = { projects: newProjects, taskLogs: [...get().taskLogs, ...newLogs] }
+      saveToStorage({ projects: newState.projects, members: get().members, taskLogs: newState.taskLogs })
+      set(newState)
+    }
+    return count
+  },
+
+  resetStalePages: (pageIds) => {
+    let count = 0
+    const newLogs: TaskLog[] = []
+    let newProjects = get().projects
+
+    for (const pageId of pageIds) {
+      const found = findPageInProjects(newProjects, pageId)
+      if (!found) continue
+      const page = found.page
+      if (page.status === 'completed') continue
+
+      let newStatus: PageStatus = page.status
+      if (['pending_translate', 'translating'].includes(page.status)) newStatus = 'pending_translate'
+      else if (['pending_proofread', 'proofreading'].includes(page.status)) newStatus = 'pending_proofread'
+      else if (['pending_typeset', 'typesetting'].includes(page.status)) newStatus = 'pending_typeset'
+      else continue
+
+      newProjects = updatePage(newProjects, pageId, p => ({
+        ...p,
+        status: newStatus,
+        assigneeId: null,
+        updatedAt: new Date().toISOString().split('T')[0],
+      }))
+
+      if (page.assigneeId) {
+        newLogs.push(makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, page.assigneeId, 'released'))
+      }
+      count++
+    }
+
+    if (count > 0) {
+      const newState = { projects: newProjects, taskLogs: [...get().taskLogs, ...newLogs] }
+      saveToStorage({ projects: newState.projects, members: get().members, taskLogs: newState.taskLogs })
+      set(newState)
+    }
+    return count
+  },
+
+  leaderAssign: (pageId, memberId) => {
+    const found = findPageInProjects(get().projects, pageId)
+    if (!found) return false
+    const member = get().members.find(m => m.id === memberId)
+    if (!member) return false
+
+    const page = found.page
+    if (page.assigneeId) return false
+
+    let newStatus: PageStatus = page.status
+    if (member.role === 'translator' && page.status === 'pending_translate') newStatus = 'translating'
+    else if (member.role === 'proofreader' && page.status === 'pending_proofread') newStatus = 'proofreading'
+    else if (member.role === 'typesetter' && page.status === 'pending_typeset') newStatus = 'typesetting'
+    else return false
+
+    const newLog = makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, get().currentUserId, 'claimed', `组长指派给${member.name}`)
+
+    const newProjects = updatePage(get().projects, pageId, p => ({
+      ...p,
+      status: newStatus,
+      assigneeId: memberId,
+      updatedAt: new Date().toISOString().split('T')[0],
+    }))
+
+    const newState = { projects: newProjects, taskLogs: [...get().taskLogs, newLog] }
+    saveToStorage({ projects: newState.projects, members: get().members, taskLogs: newState.taskLogs })
+    set(newState)
+    return true
+  },
+
   getPagesByStatus: (projectId, status) => {
     return get().getAllPages(projectId).filter(p => p.status === status)
   },
@@ -380,6 +474,22 @@ export const useStore = create<AppState>((set, get) => ({
     return allPages.filter(p => p.status !== 'completed' && p.deadline < today)
   },
 
+  getOverduePagesDetailed: (projectId) => {
+    const today = new Date().toISOString().split('T')[0]
+    const results: { page: Page; projectId: string; chapterName: string; isAssigned: boolean }[] = []
+    const projects = projectId ? [get().projects.find(p => p.id === projectId)].filter(Boolean) as Project[] : get().projects
+    for (const project of projects) {
+      for (const ch of project.chapters) {
+        for (const page of ch.pages) {
+          if (page.status !== 'completed' && page.deadline < today) {
+            results.push({ page, projectId: project.id, chapterName: ch.name, isAssigned: !!page.assigneeId })
+          }
+        }
+      }
+    }
+    return results
+  },
+
   getBottleneckStats: (projectId) => {
     const pages = get().getAllPages(projectId)
     return {
@@ -391,10 +501,26 @@ export const useStore = create<AppState>((set, get) => ({
 
   getMemberTaskCount: (memberId) => {
     const allPages = get().projects.flatMap(p => p.chapters.flatMap(ch => ch.pages))
-    return {
-      active: allPages.filter(p => p.assigneeId === memberId && p.status !== 'completed').length,
-      completed: allPages.filter(p => p.status === 'completed').length,
+    const taskLogs = get().taskLogs
+    const active = allPages.filter(p => p.assigneeId === memberId && p.status !== 'completed').length
+    const completedPages = new Set<string>()
+    for (const log of taskLogs) {
+      if (log.action === 'typeset_uploaded' || (log.action === 'submitted' && log.memberId === memberId)) {
+        const page = allPages.find(p => p.id === log.pageId)
+        if (page && page.status === 'completed') {
+          completedPages.add(log.pageId)
+        }
+      }
     }
+    const memberLogs = taskLogs.filter(l => l.memberId === memberId)
+    const participatedPageIds = new Set<string>()
+    for (const log of memberLogs) {
+      const page = allPages.find(p => p.id === log.pageId)
+      if (page && page.status === 'completed') {
+        participatedPageIds.add(log.pageId)
+      }
+    }
+    return { active, completed: participatedPageIds.size }
   },
 
   setCurrentUser: (id) => set({ currentUserId: id }),

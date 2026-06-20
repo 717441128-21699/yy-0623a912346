@@ -13,7 +13,7 @@ export type DialogueStatus = 'draft' | 'submitted' | 'approved' | 'rejected'
 
 export type CommentType = 'tone' | 'naming' | 'meme_note' | 'other'
 
-export type TaskAction = 'claimed' | 'submitted' | 'released' | 'approved' | 'rejected'
+export type TaskAction = 'claimed' | 'submitted' | 'released' | 'approved' | 'rejected' | 'comment_added' | 'typeset_uploaded'
 
 export interface Member {
   id: string
@@ -76,6 +76,7 @@ export interface TaskLog {
   projectId: string
   memberId: string
   action: TaskAction
+  detail?: string
   timestamp: string
 }
 
@@ -111,4 +112,14 @@ export const STATUS_COLORS: Record<PageStatus, string> = {
   pending_typeset: '#f5a623',
   typesetting: '#d4891c',
   completed: '#4caf50',
+}
+
+export const ACTION_LABELS: Record<TaskAction, string> = {
+  claimed: '领取任务',
+  submitted: '提交翻译',
+  released: '放弃任务',
+  approved: '通过校对',
+  rejected: '退回翻译',
+  comment_added: '添加批注',
+  typeset_uploaded: '上传成品图',
 }

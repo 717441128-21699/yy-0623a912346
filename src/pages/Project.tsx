@@ -1,9 +1,12 @@
 import { useState, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
-import { ChevronRight, ChevronDown, Filter, ArrowUpDown } from 'lucide-react'
+import {
+  ChevronRight, ChevronDown, Filter, ArrowUpDown,
+  Settings, CheckSquare, Square, UserPlus, RotateCcw, X,
+} from 'lucide-react'
 import { useStore } from '@/store/useStore'
 import PageCard from '@/components/PageCard'
-import type { PageStatus, Chapter } from '@/types'
+import type { PageStatus, Chapter, MemberRole } from '@/types'
 import { STATUS_LABELS, STATUS_COLORS } from '@/types'
 
 const ALL_STATUSES: PageStatus[] = [
@@ -11,23 +14,47 @@ const ALL_STATUSES: PageStatus[] = [
   'proofreading', 'pending_typeset', 'typesetting', 'completed',
 ]
 
+const PENDING_ROLE_MAP: Record<string, MemberRole> = {
+  pending_translate: 'translator',
+  pending_proofread: 'proofreader',
+  pending_typeset: 'typesetter',
+}
+
 export default function Project() {
   const { projectId } = useParams<{ projectId: string }>()
   const getProject = useStore((s) => s.getProject)
   const members = useStore((s) => s.members)
+  const currentUserId = useStore((s) => s.currentUserId)
+  const getMember = useStore((s) => s.getMember)
+  const batchAssign = useStore((s) => s.batchAssign)
+  const resetStalePages = useStore((s) => s.resetStalePages)
   const project = projectId ? getProject(projectId) : undefined
+  const currentUser = getMember(currentUserId)
+  const isLeader = currentUser?.role === 'leader'
 
   const [selectedChapterId, setSelectedChapterId] = useState<string | null>(null)
   const [expandedChapters, setExpandedChapters] = useState<Set<string>>(new Set())
   const [statusFilter, setStatusFilter] = useState<PageStatus | 'all'>('all')
   const [memberFilter, setMemberFilter] = useState<string>('all')
   const [sortBy, setSortBy] = useState<'pageNumber' | 'updatedAt'>('pageNumber')
+  const [dispatchMode, setDispatchMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [assignMemberId, setAssignMemberId] = useState('')
 
   const toggleChapter = (chapterId: string) => {
     setExpandedChapters((prev) => {
       const next = new Set(prev)
       if (next.has(chapterId)) next.delete(chapterId)
       else next.add(chapterId)
+      return next
+    })
+  }
+
+  const toggleSelect = (pageId: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(pageId)) next.delete(pageId)
+      else next.add(pageId)
       return next
     })
   }
@@ -44,6 +71,20 @@ export default function Project() {
     )
   }, [project, selectedChapterId, statusFilter, memberFilter, sortBy])
 
+  const eligibleRoles = useMemo(() => {
+    const roles = new Set<MemberRole>()
+    for (const id of selectedIds) {
+      const page = pages.find((p) => p.id === id)
+      if (page && PENDING_ROLE_MAP[page.status]) roles.add(PENDING_ROLE_MAP[page.status])
+    }
+    return roles
+  }, [selectedIds, pages])
+
+  const eligibleMembers = useMemo(() => {
+    if (eligibleRoles.size === 0) return []
+    return members.filter((m) => eligibleRoles.has(m.role))
+  }, [eligibleRoles, members])
+
   const totalProgress = useMemo(() => {
     if (!project) return { completed: 0, total: 0 }
     const all = project.chapters.flatMap((c) => c.pages)
@@ -53,6 +94,26 @@ export default function Project() {
   const chapterProgress = (chapter: Chapter) => {
     const done = chapter.pages.filter((p) => p.status === 'completed').length
     return { done, total: chapter.pages.length }
+  }
+
+  const selectAll = () => setSelectedIds(new Set(pages.map((p) => p.id)))
+
+  const exitDispatch = () => {
+    setDispatchMode(false)
+    setSelectedIds(new Set())
+    setAssignMemberId('')
+  }
+
+  const handleBatchAssign = () => {
+    if (!assignMemberId) return
+    batchAssign(Array.from(selectedIds), assignMemberId)
+    setSelectedIds(new Set())
+    setAssignMemberId('')
+  }
+
+  const handleReset = () => {
+    resetStalePages(Array.from(selectedIds))
+    setSelectedIds(new Set())
   }
 
   if (!project) {
@@ -204,7 +265,71 @@ export default function Project() {
             <ArrowUpDown className="w-3.5 h-3.5" />
             {sortBy === 'pageNumber' ? '页码' : '更新时间'}
           </button>
+
+          {isLeader && (
+            <>
+              <div className="h-5 w-px bg-border-dark" />
+              <button
+                onClick={() => { dispatchMode ? exitDispatch() : setDispatchMode(true) }}
+                className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg transition-colors ${
+                  dispatchMode
+                    ? 'bg-accent-red text-white'
+                    : 'bg-dark-card text-txt-secondary hover:bg-dark-hover'
+                }`}
+              >
+                <Settings className="w-3.5 h-3.5" />
+                {dispatchMode ? '退出调度' : '批量调度'}
+              </button>
+            </>
+          )}
         </div>
+
+        {dispatchMode && (
+          <div className="px-6 py-3 border-b border-border-dark bg-dark-secondary/80 flex items-center gap-3 flex-wrap">
+            <span className="text-xs text-txt-secondary font-medium">
+              已选 {selectedIds.size} 页
+            </span>
+            <div className="h-5 w-px bg-border-dark" />
+            <select
+              value={assignMemberId}
+              onChange={(e) => setAssignMemberId(e.target.value)}
+              className="bg-dark-card text-txt-secondary text-xs rounded-lg px-3 py-1.5 border border-border-dark focus:outline-none focus:border-accent-red"
+            >
+              <option value="">选择成员分配</option>
+              {eligibleMembers.map((m) => (
+                <option key={m.id} value={m.id}>{m.name}</option>
+              ))}
+            </select>
+            <button
+              onClick={handleBatchAssign}
+              disabled={!assignMemberId || selectedIds.size === 0}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-accent-green text-white disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              批量分配
+            </button>
+            <button
+              onClick={handleReset}
+              disabled={selectedIds.size === 0}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-dark-card text-txt-secondary hover:bg-dark-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              重置为待领取
+            </button>
+            <button
+              onClick={selectAll}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-dark-card text-txt-secondary hover:bg-dark-hover transition-colors"
+            >
+              全选当前筛选
+            </button>
+            <button
+              onClick={exitDispatch}
+              className="ml-auto text-txt-muted hover:text-txt-primary transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto p-6">
           {pages.length === 0 ? (
@@ -213,9 +338,27 @@ export default function Project() {
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-              {pages.map((page) => (
-                <PageCard key={page.id} page={page} projectId={project.id} />
-              ))}
+              {pages.map((page) =>
+                dispatchMode ? (
+                  <div
+                    key={page.id}
+                    className={`relative cursor-pointer rounded-xl ${selectedIds.has(page.id) ? 'ring-2 ring-accent-red' : ''}`}
+                    onClick={() => toggleSelect(page.id)}
+                  >
+                    <div className="absolute top-2 right-2 z-20">
+                      {selectedIds.has(page.id) ? (
+                        <CheckSquare className="w-5 h-5 text-accent-red drop-shadow-lg" />
+                      ) : (
+                        <Square className="w-5 h-5 text-white/70 drop-shadow-lg" />
+                      )}
+                    </div>
+                    <div className="absolute inset-0 z-10 rounded-xl" />
+                    <PageCard page={page} projectId={project.id} viewerRole={currentUser?.role} />
+                  </div>
+                ) : (
+                  <PageCard key={page.id} page={page} projectId={project.id} viewerRole={currentUser?.role} />
+                )
+              )}
             </div>
           )}
         </div>

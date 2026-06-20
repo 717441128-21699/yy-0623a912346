@@ -1,19 +1,27 @@
 import { Link } from 'react-router-dom'
-import { Clock, CheckCircle2 } from 'lucide-react'
-import type { Page } from '@/types'
+import { Clock, CheckCircle2, MessageSquare, Image } from 'lucide-react'
+import type { Page, MemberRole } from '@/types'
 import { useStore } from '@/store/useStore'
 import StatusBadge from '@/components/StatusBadge'
 
 interface PageCardProps {
   page: Page
   projectId: string
+  viewerRole?: MemberRole
 }
 
-export default function PageCard({ page, projectId }: PageCardProps) {
+export default function PageCard({ page, projectId, viewerRole }: PageCardProps) {
   const getMember = useStore((s) => s.getMember)
   const assignee = page.assigneeId ? getMember(page.assigneeId) : null
   const today = new Date().toISOString().split('T')[0]
   const isOverdue = page.status !== 'completed' && page.deadline < today
+
+  const dialogues = page.dialogues
+    .filter((d) => d.text.trim())
+    .filter((d) => (viewerRole === 'typesetter' ? d.status === 'approved' : true))
+    .slice(0, 2)
+
+  const isTypesettingStage = ['pending_typeset', 'typesetting'].includes(page.status)
 
   return (
     <Link
@@ -24,7 +32,7 @@ export default function PageCard({ page, projectId }: PageCardProps) {
         <img
           src={page.originalImage}
           alt={`P.${page.pageNumber}`}
-          className="w-full aspect-square object-cover rounded-t-xl"
+          className="w-full aspect-square object-cover"
         />
         <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5">
           <span className="text-white text-sm font-semibold">P.{page.pageNumber}</span>
@@ -37,6 +45,23 @@ export default function PageCard({ page, projectId }: PageCardProps) {
       </div>
       <div className="p-2.5 space-y-1.5">
         <StatusBadge status={page.status} />
+        {dialogues.map((d) => (
+          <p key={d.id} className="text-txt-secondary text-xs truncate">{d.text}</p>
+        ))}
+        {page.proofreadComments.length > 0 && (
+          <div className="flex items-center gap-1 text-orange-400">
+            <MessageSquare className="w-3 h-3" />
+            <span className="text-xs">{page.proofreadComments.length} 条批注</span>
+          </div>
+        )}
+        {page.typesetImage ? (
+          <div className="flex items-center gap-1 text-green-400">
+            <Image className="w-3 h-3" />
+            <span className="text-xs">成品已传</span>
+          </div>
+        ) : isTypesettingStage ? (
+          <span className="text-xs text-gray-500">待上传</span>
+        ) : null}
         {assignee && (
           <div className="text-xs text-gray-300 truncate">{assignee.name}</div>
         )}

@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { Users, AlertTriangle, Clock, BarChart3 } from 'lucide-react'
+import { Users, AlertTriangle, Clock, BarChart3, UserCheck, UserX } from 'lucide-react'
 import { useStore } from '@/store/useStore'
 import StatusBadge from '@/components/StatusBadge'
 import { ROLE_LABELS } from '@/types'
@@ -13,59 +13,43 @@ const ROLE_COLORS: Record<MemberRole, string> = {
   typesetter: '#f5a623',
 }
 
-interface OverduePageInfo {
-  pageId: string
-  projectId: string
-  projectName: string
-  chapterName: string
-  pageNumber: number
-  status: Parameters<typeof StatusBadge>[0]['status']
-  deadline: string
-  assigneeId: string | null
-}
+type OverdueFilter = 'all' | 'assigned' | 'unassigned'
 
 export default function Members() {
   const members = useStore(s => s.members)
-  const projects = useStore(s => s.projects)
-  const currentUserId = useStore(s => s.currentUserId)
   const getMemberTaskCount = useStore(s => s.getMemberTaskCount)
-  const getOverduePages = useStore(s => s.getOverduePages)
+  const getOverduePagesDetailed = useStore(s => s.getOverduePagesDetailed)
   const getBottleneckStats = useStore(s => s.getBottleneckStats)
   const switchRole = useStore(s => s.switchRole)
+  const getMember = useStore(s => s.getMember)
 
   const [memberFilter, setMemberFilter] = useState<string>('all')
+  const [overdueFilter, setOverdueFilter] = useState<OverdueFilter>('all')
   const [roleDropdown, setRoleDropdown] = useState<string | null>(null)
 
+  const currentUserId = useStore(s => s.currentUserId)
   const currentUser = members.find(m => m.id === currentUserId)
   const isLeader = currentUser?.role === 'leader'
 
-  const overduePages = useMemo(() => {
-    const result: OverduePageInfo[] = []
-    for (const project of projects) {
-      for (const chapter of project.chapters) {
-        for (const page of chapter.pages) {
-          if (page.status !== 'completed' && page.deadline < new Date().toISOString().split('T')[0]) {
-            result.push({
-              pageId: page.id,
-              projectId: project.id,
-              projectName: project.name,
-              chapterName: chapter.name,
-              pageNumber: page.pageNumber,
-              status: page.status,
-              deadline: page.deadline,
-              assigneeId: page.assigneeId,
-            })
-          }
-        }
-      }
+  const overdueDetailed = useMemo(() => getOverduePagesDetailed(), [getOverduePagesDetailed])
+
+  const filteredOverdue = useMemo(() => {
+    let result = overdueDetailed
+    if (memberFilter !== 'all') {
+      result = result.filter(item => item.page.assigneeId === memberFilter)
+    }
+    if (overdueFilter === 'assigned') {
+      result = result.filter(item => item.isAssigned)
+    } else if (overdueFilter === 'unassigned') {
+      result = result.filter(item => !item.isAssigned)
     }
     return result
-  }, [projects])
+  }, [overdueDetailed, memberFilter, overdueFilter])
 
-  const filteredOverdue = memberFilter === 'all'
-    ? overduePages
-    : overduePages.filter(p => p.assigneeId === memberFilter)
+  const assignedOverdue = useMemo(() => filteredOverdue.filter(i => i.isAssigned), [filteredOverdue])
+  const unassignedOverdue = useMemo(() => filteredOverdue.filter(i => !i.isAssigned), [filteredOverdue])
 
+  const projects = useStore(s => s.projects)
   const bottleneckData = useMemo(() =>
     projects.map(p => ({ name: p.name, ...getBottleneckStats(p.id) })),
     [projects, getBottleneckStats],
@@ -77,6 +61,18 @@ export default function Members() {
   )
 
   const allRoles: MemberRole[] = ['leader', 'translator', 'proofreader', 'typesetter']
+
+  const OVERDUE_TABS: { key: OverdueFilter; label: string }[] = [
+    { key: 'all', label: '全部逾期' },
+    { key: 'assigned', label: '已分配' },
+    { key: 'unassigned', label: '未领取' },
+  ]
+
+  const projectNameMap = useMemo(() => {
+    const map: Record<string, string> = {}
+    for (const p of projects) map[p.id] = p.name
+    return map
+  }, [projects])
 
   return (
     <div className="space-y-8">
@@ -155,25 +151,84 @@ export default function Members() {
               ))}
             </select>
           </div>
+
+          <div className="flex gap-2 mb-4">
+            {OVERDUE_TABS.map(tab => (
+              <button
+                key={tab.key}
+                className={`px-3 py-1 text-sm rounded-md transition-colors ${
+                  overdueFilter === tab.key
+                    ? 'bg-accent-red text-white'
+                    : 'bg-dark-secondary text-txt-secondary hover:text-txt-primary'
+                }`}
+                onClick={() => setOverdueFilter(tab.key)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
           {filteredOverdue.length === 0 ? (
             <p className="text-sm text-txt-muted py-4 text-center">暂无逾期页面</p>
           ) : (
-            <div className="space-y-2">
-              {filteredOverdue.map(p => (
-                <Link
-                  key={p.pageId}
-                  to={`/project/${p.projectId}/page/${p.pageId}`}
-                  className="flex items-center justify-between rounded-md bg-dark-secondary p-3 hover:bg-dark-hover transition-colors"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <StatusBadge status={p.status} />
-                    <span className="text-sm text-txt-primary truncate">{p.projectName} · {p.chapterName} · 第 {p.pageNumber} 页</span>
+            <div className="space-y-4">
+              {(overdueFilter === 'all' || overdueFilter === 'assigned') && assignedOverdue.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <UserCheck size={14} className="text-accent-red" />
+                    <span className="text-sm font-medium text-accent-red">已分配逾期</span>
+                    <span className="bg-accent-red/20 text-accent-red text-xs px-1.5 py-0.5 rounded-full">{assignedOverdue.length}</span>
                   </div>
-                  <span className="text-xs text-accent-red flex items-center gap-1 shrink-0 ml-3">
-                    <Clock size={12} /> {p.deadline}
-                  </span>
-                </Link>
-              ))}
+                  <div className="space-y-2">
+                    {assignedOverdue.map(item => {
+                      const assignee = item.page.assigneeId ? getMember(item.page.assigneeId) : null
+                      return (
+                        <Link
+                          key={item.page.id}
+                          to={`/project/${item.projectId}/page/${item.page.id}`}
+                          className="flex items-center justify-between rounded-md bg-dark-secondary p-3 hover:bg-dark-hover transition-colors border-l-2 border-accent-red"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <StatusBadge status={item.page.status} />
+                            <span className="text-sm text-txt-primary truncate">{projectNameMap[item.projectId]} · {item.chapterName} · 第 {item.page.pageNumber} 页</span>
+                            {assignee && <span className="text-xs text-txt-muted shrink-0">{assignee.name}</span>}
+                          </div>
+                          <span className="text-xs text-accent-red flex items-center gap-1 shrink-0 ml-3">
+                            <Clock size={12} /> {item.page.deadline}
+                          </span>
+                        </Link>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {(overdueFilter === 'all' || overdueFilter === 'unassigned') && unassignedOverdue.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <UserX size={14} className="text-accent-orange" />
+                    <span className="text-sm font-medium text-accent-orange">未领取逾期</span>
+                    <span className="bg-accent-orange/20 text-accent-orange text-xs px-1.5 py-0.5 rounded-full">{unassignedOverdue.length}</span>
+                  </div>
+                  <div className="space-y-2">
+                    {unassignedOverdue.map(item => (
+                      <Link
+                        key={item.page.id}
+                        to={`/project/${item.projectId}/page/${item.page.id}`}
+                        className="flex items-center justify-between rounded-md bg-dark-secondary p-3 hover:bg-dark-hover transition-colors border-l-2 border-accent-orange"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <StatusBadge status={item.page.status} />
+                          <span className="text-sm text-txt-primary truncate">{projectNameMap[item.projectId]} · {item.chapterName} · 第 {item.page.pageNumber} 页</span>
+                        </div>
+                        <span className="text-xs text-accent-orange flex items-center gap-1 shrink-0 ml-3">
+                          <Clock size={12} /> {item.page.deadline}
+                        </span>
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
