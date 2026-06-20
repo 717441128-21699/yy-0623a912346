@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react'
-import { useParams } from 'react-router-dom'
+import { useState, useMemo, useEffect } from 'react'
+import { useParams, useSearchParams } from 'react-router-dom'
 import {
   UserPlus, RotateCcw, Users, Calendar, CheckSquare, Square,
   Settings, ChevronRight, ChevronDown, Filter, ArrowUpDown, X
@@ -32,6 +32,7 @@ const ROLE_ORDER: DispatchRole[] = ['translator', 'proofreader', 'typesetter']
 
 export default function Project() {
   const { projectId } = useParams<{ projectId: string }>()
+  const [searchParams] = useSearchParams()
   const getProject = useStore((s) => s.getProject)
   const members = useStore((s) => s.members)
   const currentUserId = useStore((s) => s.currentUserId)
@@ -53,11 +54,25 @@ export default function Project() {
   const [dispatchTab, setDispatchTab] = useState<'manual' | 'role'>('manual')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [assignMemberId, setAssignMemberId] = useState('')
+  const [highlightedIds, setHighlightedIds] = useState<Set<string>>(new Set())
   const [roleAssignments, setRoleAssignments] = useState<Record<DispatchRole, { memberId: string; chapters: Set<string> }>>({
     translator: { memberId: '', chapters: new Set() },
     proofreader: { memberId: '', chapters: new Set() },
     typesetter: { memberId: '', chapters: new Set() },
   })
+
+  useEffect(() => {
+    const s = searchParams.get('status')
+    if (s && ALL_STATUSES.includes(s as PageStatus)) setStatusFilter(s as PageStatus)
+    const m = searchParams.get('member')
+    if (m) setMemberFilter(m)
+    const h = searchParams.get('highlight')
+    if (h) {
+      const ids = new Set(h.split(',').filter(Boolean))
+      setHighlightedIds(ids)
+      setTimeout(() => setHighlightedIds(new Set()), 5000)
+    }
+  }, [])
 
   const toggleChapter = (chapterId: string) => {
     setExpandedChapters((prev) => {
@@ -451,7 +466,7 @@ export default function Project() {
                   return (
                     <div
                       key={page.id}
-                      className={`relative cursor-pointer rounded-xl ${selectedIds.has(page.id) ? 'ring-2 ring-accent-red' : ''}`}
+                      className={`relative cursor-pointer rounded-xl ${selectedIds.has(page.id) ? 'ring-2 ring-accent-red' : ''} ${highlightedIds.has(page.id) ? 'ring-2 ring-yellow-400 animate-pulse rounded-xl' : ''}`}
                       onClick={() => toggleSelect(page.id)}
                     >
                       <div className="absolute top-2 right-2 z-20">
@@ -466,7 +481,7 @@ export default function Project() {
                     </div>
                   )
                 }
-                return <PageCard key={page.id} page={page} projectId={project.id} viewerRole={currentUser?.role} leaderAssigned={leaderAssigned} />
+                return <div key={page.id} className={highlightedIds.has(page.id) ? 'ring-2 ring-yellow-400 animate-pulse rounded-xl' : ''}><PageCard page={page} projectId={project.id} viewerRole={currentUser?.role} leaderAssigned={leaderAssigned} /></div>
               })}
             </div>
           )}

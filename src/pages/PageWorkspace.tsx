@@ -1,8 +1,8 @@
 import { useState, useRef } from 'react'
-import { useParams, Link } from 'react-router-dom'
-import { History, ArrowLeft, Plus, Trash2, Check, Upload, MessageSquare, AlertCircle, Send, Settings, UserPlus, RotateCcw, Undo2, RefreshCw } from 'lucide-react'
+import { useParams, Link, useNavigate } from 'react-router-dom'
+import { History, ArrowLeft, Plus, Trash2, Check, Upload, MessageSquare, AlertCircle, Send, Settings, UserPlus, RotateCcw, Undo2, RefreshCw, Download } from 'lucide-react'
 import { useStore } from '@/store/useStore'
-import type { PageStatus, CommentType, TaskAction, MemberRole } from '@/types'
+import type { PageStatus, CommentType, TaskAction, MemberRole, TaskLog } from '@/types'
 import { STATUS_LABELS, COMMENT_TYPE_LABELS, ACTION_LABELS, ACTION_COLORS, ROLE_LABELS } from '@/types'
 
 const FLOW_STEPS: PageStatus[] = ['pending_translate', 'translating', 'pending_proofread', 'proofreading', 'pending_typeset', 'typesetting', 'completed']
@@ -27,6 +27,7 @@ const getRoleForStatus = (s: PageStatus): MemberRole | null =>
 
 export default function PageWorkspace() {
   const { projectId, pageId } = useParams<{ projectId: string; pageId: string }>()
+  const navigate = useNavigate()
   const store = useStore()
   const currentUser = useStore((s) => s.getMember(s.currentUserId))
   const pageData = useStore((s) => s.getPage(projectId!, pageId!))
@@ -36,6 +37,8 @@ export default function PageWorkspace() {
   const [newCommentText, setNewCommentText] = useState<Record<string, string>>({})
   const [typesetPreview, setTypesetPreview] = useState<string | null>(null)
   const [selectedMemberId, setSelectedMemberId] = useState('')
+  const [tlMemberFilter, setTlMemberFilter] = useState('all')
+  const [tlActionFilter, setTlActionFilter] = useState<string>('all')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const reuploadRef = useRef<HTMLInputElement>(null)
   const leaderReuploadRef = useRef<HTMLInputElement>(null)
@@ -51,6 +54,8 @@ export default function PageWorkspace() {
   const filteredMembers = appropriateRole ? allMembers.filter(m => m.role === appropriateRole) : []
   const canSendBack = !['translating', 'pending_translate'].includes(page.status)
   const canReclaim = page.status !== 'completed'
+
+  const goBackToProject = () => navigate(`/project/${projectId}?highlight=${pageId}`)
 
   const handleClaim = () => { if (!store.claimTask(pageId, currentUser.id)) alert('已被他人领取') }
 
@@ -79,7 +84,7 @@ export default function PageWorkspace() {
 
   const handleLeaderChangeAssignee = () => {
     if (!selectedMemberId) { alert('请选择成员'); return }
-    if (store.leaderChangeAssignee(pageId, selectedMemberId)) { alert('已更换负责人'); setSelectedMemberId('') }
+    if (store.leaderChangeAssignee(pageId, selectedMemberId)) { setSelectedMemberId(''); goBackToProject() }
   }
 
   const renderFlowBar = () => (
@@ -302,7 +307,7 @@ export default function PageWorkspace() {
           </div>
           <div className="space-y-2">
             <h3 className="text-txt-secondary text-sm font-medium">退回上一环节</h3>
-            <button onClick={() => store.leaderSendBack(pageId)} disabled={!canSendBack}
+            <button onClick={() => { store.leaderSendBack(pageId); goBackToProject() }} disabled={!canSendBack}
               className="w-full px-4 py-2 rounded-md bg-accent-orange text-white text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1">
               <Undo2 className="w-4 h-4" /> {getSendBackLabel(page.status)}
             </button>
@@ -310,7 +315,7 @@ export default function PageWorkspace() {
           </div>
           <div className="space-y-2">
             <h3 className="text-txt-secondary text-sm font-medium">回收待领取</h3>
-            <button onClick={() => store.leaderReclaim(pageId)} disabled={!canReclaim}
+            <button onClick={() => { store.leaderReclaim(pageId); goBackToProject() }} disabled={!canReclaim}
               className="w-full px-4 py-2 rounded-md bg-accent-red text-white text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1">
               <RotateCcw className="w-4 h-4" /> 回收待领取
             </button>
@@ -333,19 +338,63 @@ export default function PageWorkspace() {
 
   const renderTimeline = () => {
     const logs = store.getTaskLogsForPage(pageId)
+    let filteredLogs = logs
+    if (tlMemberFilter !== 'all') filteredLogs = filteredLogs.filter(l => l.memberId === tlMemberFilter)
+    if (tlActionFilter !== 'all') filteredLogs = filteredLogs.filter(l => l.action === tlActionFilter)
+
+    const exportCSV = (csvLogs: TaskLog[]) => {
+      const header = '页面ID,操作者,操作,备注,时间'
+      const rows = csvLogs.map(l => {
+        const name = LEADER_ACTIONS.has(l.action) ? '组长' : store.getMember(l.memberId)?.name ?? '未知'
+        return `${l.pageId},${name},${ACTION_LABELS[l.action]},${l.detail ?? ''},${l.timestamp}`
+      })
+      const csv = '\uFEFF' + header + '\n' + rows.join('\n')
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `操作记录_${pageId}_${new Date().toISOString().slice(0,10)}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    }
+
+    const memberIds = [...new Set(logs.map(l => l.memberId))]
+    const actionTypes = [...new Set(logs.map(l => l.action))]
+
     return (
       <div className="bg-dark-card rounded-xl p-4 space-y-3">
         <div className="flex items-center gap-2">
           <History className="w-4 h-4 text-txt-secondary" />
           <h2 className="text-txt-primary font-semibold">操作记录</h2>
         </div>
-        {logs.length === 0 ? <p className="text-txt-muted text-sm">暂无操作记录</p> : (
+        <div className="flex items-center gap-2 flex-wrap">
+          <select value={tlMemberFilter} onChange={(e) => setTlMemberFilter(e.target.value)}
+            className="bg-dark-secondary text-txt-primary text-xs rounded px-2 py-1 border border-border-dark focus:outline-none">
+            <option value="all">全部成员</option>
+            {memberIds.map(id => {
+              const m = store.getMember(id)
+              return <option key={id} value={id}>{LEADER_ACTIONS.has(logs.find(l => l.memberId === id)?.action ?? '' as TaskAction) ? '组长' : m?.name ?? '未知'}</option>
+            })}
+          </select>
+          <select value={tlActionFilter} onChange={(e) => setTlActionFilter(e.target.value)}
+            className="bg-dark-secondary text-txt-primary text-xs rounded px-2 py-1 border border-border-dark focus:outline-none">
+            <option value="all">全部操作</option>
+            {actionTypes.map(a => (
+              <option key={a} value={a}>{ACTION_LABELS[a]}</option>
+            ))}
+          </select>
+          <button onClick={() => exportCSV(filteredLogs)}
+            className="flex items-center gap-1 text-xs text-accent-blue hover:text-accent-green transition-colors px-2 py-1">
+            <Download className="w-3 h-3" /> 导出CSV
+          </button>
+        </div>
+        {filteredLogs.length === 0 ? <p className="text-txt-muted text-sm">暂无操作记录</p> : (
           <div className="space-y-0">
-            {logs.map((log, i) => {
+            {filteredLogs.map((log, i) => {
               const isLeaderAction = LEADER_ACTIONS.has(log.action)
               const member = isLeaderAction ? null : store.getMember(log.memberId)
               const color = ACTION_COLORS[log.action]
-              const isLast = i === logs.length - 1
+              const isLast = i === filteredLogs.length - 1
               return (
                 <div key={log.id} className="flex gap-3">
                   <div className="flex flex-col items-center">

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Project, Member, TaskLog, Page, Dialogue, ProofreadComment, PageStatus, MemberRole } from '@/types'
+import type { Project, Member, TaskLog, Page, Dialogue, ProofreadComment, PageStatus, MemberRole, TaskAction } from '@/types'
 import { MOCK_PROJECTS, MOCK_MEMBERS, MOCK_TASK_LOGS } from '@/data/mockData'
 import { STATUS_LABELS, ROLE_LABELS } from '@/types'
 
@@ -47,6 +47,12 @@ interface AppState {
   }
   getBottleneckStats: (projectId: string) => { translate: number; proofread: number; typeset: number }
   getMemberTaskCount: (memberId: string) => { active: number; completed: number }
+  getRetrospectiveStats: (projectId?: string) => {
+    stageDurations: { stage: string; avgHours: number; count: number }[]
+    memberBacklog: { memberId: string; name: string; role: string; activeCount: number; pageIds: string[] }[]
+    repeatedRejections: { pageId: string; pageNumber: number; chapterName: string; projectId: string; rejectionCount: number }[]
+  }
+  getFilteredLogs: (filters: { memberId?: string; action?: TaskAction; projectId?: string; stage?: string }) => TaskLog[]
 
   setCurrentUser: (id: string) => void
   switchRole: (memberId: string, role: MemberRole) => void
@@ -733,6 +739,83 @@ export const useStore = create<AppState>((set, get) => ({
       }
     }
     return { active, completed: participatedPageIds.size }
+  },
+
+  getRetrospectiveStats: (projectId) => {
+    const projects = projectId ? [get().projects.find(p => p.id === projectId)].filter(Boolean) as Project[] : get().projects
+    const taskLogs = get().taskLogs
+    const stageDurations: { stage: string; avgHours: number; count: number }[] = []
+    const stageActions: Record<string, { enter: TaskAction; exit: TaskAction }> = {
+      '翻译': { enter: 'claimed', exit: 'submitted' },
+      '校对': { enter: 'claimed', exit: 'approved' },
+      '嵌字': { enter: 'claimed', exit: 'typeset_uploaded' },
+    }
+    for (const [stage, actions] of Object.entries(stageActions)) {
+      const durations: number[] = []
+      for (const project of projects) {
+        for (const ch of project.chapters) {
+          for (const page of ch.pages) {
+            const roleFilter = stage === '翻译' ? 'translator' : stage === '校对' ? 'proofreader' : 'typesetter'
+            const enterLog = taskLogs.find(l => l.pageId === page.id && l.action === actions.enter && get().getMember(l.memberId)?.role === roleFilter)
+            const exitLog = taskLogs.find(l => l.pageId === page.id && (l.action === actions.exit || l.action === 'typeset_reuploaded') && l.timestamp > (enterLog?.timestamp ?? ''))
+            if (enterLog && exitLog) {
+              const hours = (new Date(exitLog.timestamp).getTime() - new Date(enterLog.timestamp).getTime()) / (1000 * 60 * 60)
+              if (hours >= 0 && hours < 720) durations.push(hours)
+            }
+          }
+        }
+      }
+      if (durations.length > 0) {
+        stageDurations.push({ stage, avgHours: Math.round(durations.reduce((a, b) => a + b, 0) / durations.length), count: durations.length })
+      }
+    }
+
+    const memberBacklog: { memberId: string; name: string; role: string; activeCount: number; pageIds: string[] }[] = []
+    for (const member of get().members) {
+      if (member.role === 'leader') continue
+      const activePages: string[] = []
+      for (const project of projects) {
+        for (const ch of project.chapters) {
+          for (const page of ch.pages) {
+            if (page.assigneeId === member.id && page.status !== 'completed') activePages.push(page.id)
+          }
+        }
+      }
+      memberBacklog.push({ memberId: member.id, name: member.name, role: ROLE_LABELS[member.role], activeCount: activePages.length, pageIds: activePages })
+    }
+    memberBacklog.sort((a, b) => b.activeCount - a.activeCount)
+
+    const repeatedRejections: { pageId: string; pageNumber: number; chapterName: string; projectId: string; rejectionCount: number }[] = []
+    for (const project of projects) {
+      for (const ch of project.chapters) {
+        for (const page of ch.pages) {
+          const rejectionCount = taskLogs.filter(l => l.pageId === page.id && l.action === 'rejected').length
+          if (rejectionCount >= 1) {
+            repeatedRejections.push({ pageId: page.id, pageNumber: page.pageNumber, chapterName: ch.name, projectId: project.id, rejectionCount })
+          }
+        }
+      }
+    }
+    repeatedRejections.sort((a, b) => b.rejectionCount - a.rejectionCount)
+
+    return { stageDurations, memberBacklog, repeatedRejections }
+  },
+
+  getFilteredLogs: (filters) => {
+    let logs = get().taskLogs
+    if (filters.memberId) logs = logs.filter(l => l.memberId === filters.memberId)
+    if (filters.action) logs = logs.filter(l => l.action === filters.action)
+    if (filters.projectId) logs = logs.filter(l => l.projectId === filters.projectId)
+    if (filters.stage) {
+      const stageMap: Record<string, string[]> = {
+        '翻译': ['claimed', 'submitted', 'rejected', 'assign_by_leader', 'reclaimed_by_leader', 'sent_back_by_leader'],
+        '校对': ['claimed', 'approved', 'rejected', 'comment_added', 'assign_by_leader', 'reclaimed_by_leader', 'sent_back_by_leader'],
+        '嵌字': ['claimed', 'typeset_uploaded', 'typeset_reuploaded', 'assign_by_leader', 'reclaimed_by_leader', 'sent_back_by_leader'],
+      }
+      const allowed = stageMap[filters.stage] ?? []
+      logs = logs.filter(l => allowed.includes(l.action))
+    }
+    return logs.sort((a, b) => b.timestamp.localeCompare(a.timestamp))
   },
 
   setCurrentUser: (id) => set({ currentUserId: id }),
