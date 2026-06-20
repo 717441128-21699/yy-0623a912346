@@ -13,7 +13,19 @@ export type DialogueStatus = 'draft' | 'submitted' | 'approved' | 'rejected'
 
 export type CommentType = 'tone' | 'naming' | 'meme_note' | 'other'
 
-export type TaskAction = 'claimed' | 'submitted' | 'released' | 'approved' | 'rejected' | 'comment_added' | 'typeset_uploaded'
+export type TaskAction =
+  | 'claimed'
+  | 'submitted'
+  | 'released'
+  | 'approved'
+  | 'rejected'
+  | 'comment_added'
+  | 'typeset_uploaded'
+  | 'typeset_reuploaded'
+  | 'assign_by_leader'
+  | 'reclaimed_by_leader'
+  | 'sent_back_by_leader'
+  | 'role_switch_by_leader'
 
 export interface Member {
   id: string
@@ -122,4 +134,24 @@ export const ACTION_LABELS: Record<TaskAction, string> = {
   rejected: '退回翻译',
   comment_added: '添加批注',
   typeset_uploaded: '上传成品图',
+  typeset_reuploaded: '重新上传成品图',
+  assign_by_leader: '组长指派',
+  reclaimed_by_leader: '组长回收待领取',
+  sent_back_by_leader: '组长退回上一环节',
+  role_switch_by_leader: '组长调整角色',
+}
+
+export const ACTION_COLORS: Record<TaskAction, string> = {
+  claimed: '#0f3460',
+  submitted: '#16c79a',
+  released: '#f5a623',
+  approved: '#16c79a',
+  rejected: '#e94560',
+  comment_added: '#9b59b6',
+  typeset_uploaded: '#16c79a',
+  typeset_reuploaded: '#16a085',
+  assign_by_leader: '#e94560',
+  reclaimed_by_leader: '#e67e22',
+  sent_back_by_leader: '#e74c3c',
+  role_switch_by_leader: '#8e44ad',
 }

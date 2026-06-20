@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { Project, Member, TaskLog, Page, Dialogue, ProofreadComment, PageStatus, MemberRole } from '@/types'
 import { MOCK_PROJECTS, MOCK_MEMBERS, MOCK_TASK_LOGS } from '@/data/mockData'
+import { STATUS_LABELS, ROLE_LABELS } from '@/types'
 
 interface AppState {
   projects: Project[]
@@ -27,13 +28,23 @@ interface AppState {
   removeProofreadComment: (pageId: string, commentId: string) => void
   confirmComplete: (pageId: string) => void
   batchAssign: (pageIds: string[], memberId: string) => number
+  batchAssignByRole: (projectId: string, role: MemberRole, memberId: string, chapterIds?: string[]) => number
   resetStalePages: (pageIds: string[]) => number
   leaderAssign: (pageId: string, memberId: string) => boolean
+  leaderReclaim: (pageId: string) => boolean
+  leaderSendBack: (pageId: string) => boolean
+  leaderChangeAssignee: (pageId: string, memberId: string) => boolean
+  reuploadTypeset: (pageId: string, typesetImage: string) => void
 
   getPagesByStatus: (projectId: string, status: PageStatus) => Page[]
   getPagesByAssignee: (projectId: string, memberId: string) => Page[]
   getOverduePages: (projectId?: string) => Page[]
   getOverduePagesDetailed: (projectId?: string) => { page: Page; projectId: string; chapterName: string; isAssigned: boolean }[]
+  getStuckPagesForReminder: (projectId?: string) => {
+    assignedOverdue: { page: Page; projectId: string; chapterName: string }[]
+    unclaimedForLong: { page: Page; projectId: string; chapterName: string; daysUnclaimed: number }[]
+    rejectedNotResumed: { page: Page; projectId: string; chapterName: string; daysSinceRejection: number }[]
+  }
   getBottleneckStats: (projectId: string) => { translate: number; proofread: number; typeset: number }
   getMemberTaskCount: (memberId: string) => { active: number; completed: number }
 
@@ -86,7 +97,7 @@ function updatePage(projects: Project[], pageId: string, updater: (page: Page) =
   }))
 }
 
-const STORAGE_VERSION = 'v2'
+const STORAGE_VERSION = 'v3'
 const stored = loadFromStorage()
 const storedVersion = localStorage.getItem(STORAGE_KEY + '_version')
 const needsReset = storedVersion !== STORAGE_VERSION
@@ -378,7 +389,7 @@ export const useStore = create<AppState>((set, get) => ({
         updatedAt: new Date().toISOString().split('T')[0],
       }))
 
-      newLogs.push(makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, memberId, 'claimed'))
+      newLogs.push(makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, get().currentUserId, 'assign_by_leader', `指派给${member.name}（${ROLE_LABELS[member.role]}）`))
       count++
     }
 
@@ -414,9 +425,8 @@ export const useStore = create<AppState>((set, get) => ({
         updatedAt: new Date().toISOString().split('T')[0],
       }))
 
-      if (page.assigneeId) {
-        newLogs.push(makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, page.assigneeId, 'released'))
-      }
+      const detail = page.assigneeId ? `从${get().getMember(page.assigneeId)?.name}回收` : '回收至待领取'
+      newLogs.push(makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, get().currentUserId, 'reclaimed_by_leader', detail))
       count++
     }
 
@@ -443,7 +453,7 @@ export const useStore = create<AppState>((set, get) => ({
     else if (member.role === 'typesetter' && page.status === 'pending_typeset') newStatus = 'typesetting'
     else return false
 
-    const newLog = makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, get().currentUserId, 'claimed', `组长指派给${member.name}`)
+    const newLog = makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, get().currentUserId, 'assign_by_leader', `指派给${member.name}（${ROLE_LABELS[member.role]}）`)
 
     const newProjects = updatePage(get().projects, pageId, p => ({
       ...p,
@@ -456,6 +466,165 @@ export const useStore = create<AppState>((set, get) => ({
     saveToStorage({ projects: newState.projects, members: get().members, taskLogs: newState.taskLogs })
     set(newState)
     return true
+  },
+
+  batchAssignByRole: (projectId, role, memberId, chapterIds) => {
+    const project = get().projects.find(p => p.id === projectId)
+    const member = get().members.find(m => m.id === memberId)
+    if (!project || !member || member.role !== role) return 0
+
+    let count = 0
+    const newLogs: TaskLog[] = []
+    let newProjects = get().projects
+
+    const targetStatus: PageStatus | null = role === 'translator' ? 'pending_translate' : role === 'proofreader' ? 'pending_proofread' : role === 'typesetter' ? 'pending_typeset' : null
+    if (!targetStatus) return 0
+
+    const activeStatus: PageStatus = role === 'translator' ? 'translating' : role === 'proofreader' ? 'proofreading' : 'typesetting'
+
+    for (const ch of project.chapters) {
+      if (chapterIds && !chapterIds.includes(ch.id)) continue
+      for (const page of ch.pages) {
+        if (page.status !== targetStatus || page.assigneeId) continue
+
+        newProjects = updatePage(newProjects, page.id, p => ({
+          ...p,
+          status: activeStatus,
+          assigneeId: memberId,
+          updatedAt: new Date().toISOString().split('T')[0],
+        }))
+
+        newLogs.push(makeLog(page.id, ch.id, projectId, get().currentUserId, 'assign_by_leader', `指派给${member.name}（${ROLE_LABELS[member.role]}）`))
+        count++
+      }
+    }
+
+    if (count > 0) {
+      const newState = { projects: newProjects, taskLogs: [...get().taskLogs, ...newLogs] }
+      saveToStorage({ projects: newState.projects, members: get().members, taskLogs: newState.taskLogs })
+      set(newState)
+    }
+    return count
+  },
+
+  leaderReclaim: (pageId) => {
+    const found = findPageInProjects(get().projects, pageId)
+    if (!found || found.page.status === 'completed') return false
+
+    const page = found.page
+    let newStatus: PageStatus = page.status
+    if (['pending_translate', 'translating'].includes(page.status)) newStatus = 'pending_translate'
+    else if (['pending_proofread', 'proofreading'].includes(page.status)) newStatus = 'pending_proofread'
+    else if (['pending_typeset', 'typesetting'].includes(page.status)) newStatus = 'pending_typeset'
+    else return false
+
+    const newLog = makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, get().currentUserId, 'reclaimed_by_leader', page.assigneeId ? `从${get().getMember(page.assigneeId)?.name}回收` : '回收至待领取')
+
+    const newProjects = updatePage(get().projects, pageId, p => ({
+      ...p,
+      status: newStatus,
+      assigneeId: null,
+      updatedAt: new Date().toISOString().split('T')[0],
+    }))
+
+    const newState = { projects: newProjects, taskLogs: [...get().taskLogs, newLog] }
+    saveToStorage({ projects: newState.projects, members: get().members, taskLogs: newState.taskLogs })
+    set(newState)
+    return true
+  },
+
+  leaderSendBack: (pageId) => {
+    const found = findPageInProjects(get().projects, pageId)
+    if (!found) return false
+    const page = found.page
+
+    let newStatus: PageStatus | null = null
+    if (page.status === 'pending_proofread' || page.status === 'proofreading') newStatus = 'translating'
+    else if (page.status === 'pending_typeset' || page.status === 'typesetting') newStatus = 'pending_proofread'
+    else if (page.status === 'completed') newStatus = 'typesetting'
+    if (!newStatus) return false
+
+    let targetAssignee: string | null = page.assigneeId
+    if (newStatus === 'translating') {
+      const prevClaimLog = get().taskLogs.find(l => l.pageId === pageId && l.action === 'claimed' && get().getMember(l.memberId)?.role === 'translator')
+      targetAssignee = prevClaimLog?.memberId ?? null
+    } else if (newStatus === 'pending_proofread') {
+      targetAssignee = null
+    } else if (newStatus === 'typesetting') {
+      const prevClaimLog = get().taskLogs.find(l => l.pageId === pageId && l.action === 'claimed' && get().getMember(l.memberId)?.role === 'typesetter')
+      targetAssignee = prevClaimLog?.memberId ?? null
+    }
+
+    const newLog = makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, get().currentUserId, 'sent_back_by_leader', `退回至${STATUS_LABELS[newStatus]}环节`)
+
+    const newProjects = updatePage(get().projects, pageId, p => ({
+      ...p,
+      status: newStatus!,
+      assigneeId: targetAssignee,
+      updatedAt: new Date().toISOString().split('T')[0],
+      dialogues: newStatus === 'translating' ? p.dialogues.map(d => ({ ...d, status: 'rejected' as const })) : p.dialogues,
+      proofreadComments: newStatus === 'translating' && p.proofreadComments.length === 0 ? [{ id: generateId(), dialogueId: p.dialogues[0]?.id ?? '', type: 'other' as const, content: '组长退回修改', createdAt: new Date().toISOString().split('T')[0] }] : p.proofreadComments,
+    }))
+
+    const newState = { projects: newProjects, taskLogs: [...get().taskLogs, newLog] }
+    saveToStorage({ projects: newState.projects, members: get().members, taskLogs: newState.taskLogs })
+    set(newState)
+    return true
+  },
+
+  leaderChangeAssignee: (pageId, memberId) => {
+    const found = findPageInProjects(get().projects, pageId)
+    if (!found) return false
+    const member = get().members.find(m => m.id === memberId)
+    if (!member) return false
+
+    const page = found.page
+    if (page.status === 'completed') return false
+
+    const statusMatches =
+      (member.role === 'translator' && ['pending_translate', 'translating'].includes(page.status)) ||
+      (member.role === 'proofreader' && ['pending_proofread', 'proofreading'].includes(page.status)) ||
+      (member.role === 'typesetter' && ['pending_typeset', 'typesetting'].includes(page.status))
+    if (!statusMatches) return false
+
+    let newStatus: PageStatus = page.status
+    if (member.role === 'translator') newStatus = 'translating'
+    if (member.role === 'proofreader') newStatus = 'proofreading'
+    if (member.role === 'typesetter') newStatus = 'typesetting'
+
+    const newLog = makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, get().currentUserId, 'assign_by_leader', `换负责人给${member.name}（${ROLE_LABELS[member.role]}）`)
+
+    const newProjects = updatePage(get().projects, pageId, p => ({
+      ...p,
+      status: newStatus,
+      assigneeId: memberId,
+      updatedAt: new Date().toISOString().split('T')[0],
+    }))
+
+    const newState = { projects: newProjects, taskLogs: [...get().taskLogs, newLog] }
+    saveToStorage({ projects: newState.projects, members: get().members, taskLogs: newState.taskLogs })
+    set(newState)
+    return true
+  },
+
+  reuploadTypeset: (pageId, typesetImage) => {
+    const found = findPageInProjects(get().projects, pageId)
+    if (!found) return
+
+    const action = found.page.typesetImage ? 'typeset_reuploaded' : 'typeset_uploaded'
+    const newLog = makeLog(pageId, found.chapterId, get().projects[found.projectIndex].id, found.page.assigneeId ?? get().currentUserId, action)
+
+    const newProjects = updatePage(get().projects, pageId, p => ({
+      ...p,
+      status: 'completed' as PageStatus,
+      assigneeId: null,
+      typesetImage,
+      updatedAt: new Date().toISOString().split('T')[0],
+    }))
+
+    const newState = { projects: newProjects, taskLogs: [...get().taskLogs, newLog] }
+    saveToStorage({ projects: newState.projects, members: get().members, taskLogs: newState.taskLogs })
+    set(newState)
   },
 
   getPagesByStatus: (projectId, status) => {
@@ -488,6 +657,49 @@ export const useStore = create<AppState>((set, get) => ({
       }
     }
     return results
+  },
+
+  getStuckPagesForReminder: (projectId) => {
+    const today = new Date()
+    const assignedOverdue: { page: Page; projectId: string; chapterName: string }[] = []
+    const unclaimedForLong: { page: Page; projectId: string; chapterName: string; daysUnclaimed: number }[] = []
+    const rejectedNotResumed: { page: Page; projectId: string; chapterName: string; daysSinceRejection: number }[] = []
+
+    const projects = projectId ? [get().projects.find(p => p.id === projectId)].filter(Boolean) as Project[] : get().projects
+    const taskLogs = get().taskLogs
+
+    for (const project of projects) {
+      for (const ch of project.chapters) {
+        for (const page of ch.pages) {
+          if (page.status === 'completed') continue
+
+          if (page.deadline < today.toISOString().split('T')[0] && page.assigneeId) {
+            assignedOverdue.push({ page, projectId: project.id, chapterName: ch.name })
+          }
+
+          if (page.deadline < today.toISOString().split('T')[0] && !page.assigneeId && ['pending_translate', 'pending_proofread', 'pending_typeset'].includes(page.status)) {
+            const deadline = new Date(page.deadline)
+            const daysUnclaimed = Math.floor((today.getTime() - deadline.getTime()) / (1000 * 60 * 60 * 24))
+            if (daysUnclaimed >= 2) {
+              unclaimedForLong.push({ page, projectId: project.id, chapterName: ch.name, daysUnclaimed })
+            }
+          }
+
+          const lastRejectionLog = taskLogs
+            .filter(l => l.pageId === page.id && l.action === 'rejected')
+            .sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0]
+          if (lastRejectionLog && page.status === 'translating') {
+            const rejectionDate = new Date(lastRejectionLog.timestamp)
+            const daysSinceRejection = Math.floor((today.getTime() - rejectionDate.getTime()) / (1000 * 60 * 60 * 24))
+            if (daysSinceRejection >= 2) {
+              rejectedNotResumed.push({ page, projectId: project.id, chapterName: ch.name, daysSinceRejection })
+            }
+          }
+        }
+      }
+    }
+
+    return { assignedOverdue, unclaimedForLong, rejectedNotResumed }
   },
 
   getBottleneckStats: (projectId) => {
@@ -526,8 +738,16 @@ export const useStore = create<AppState>((set, get) => ({
   setCurrentUser: (id) => set({ currentUserId: id }),
 
   switchRole: (memberId, role) => {
+    const targetMember = get().getMember(memberId)
     const newMembers = get().members.map(m => m.id === memberId ? { ...m, role } : m)
-    saveToStorage({ projects: get().projects, members: newMembers, taskLogs: get().taskLogs })
-    set({ members: newMembers })
+    if (targetMember && targetMember.role !== role) {
+      const newLog = makeLog('', '', '', get().currentUserId, 'role_switch_by_leader', `${targetMember.name} 从 ${ROLE_LABELS[targetMember.role]} 调整为 ${ROLE_LABELS[role]}`)
+      const newState = { members: newMembers, taskLogs: [...get().taskLogs, newLog] }
+      saveToStorage({ projects: get().projects, members: newMembers, taskLogs: newState.taskLogs })
+      set(newState)
+    } else {
+      saveToStorage({ projects: get().projects, members: newMembers, taskLogs: get().taskLogs })
+      set({ members: newMembers })
+    }
   },
 }))

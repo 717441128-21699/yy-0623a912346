@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { Clock, CheckCircle2, MessageSquare, Image } from 'lucide-react'
+import { Clock, CheckCircle2, MessageSquare, Image, Star } from 'lucide-react'
 import type { Page, MemberRole } from '@/types'
 import { useStore } from '@/store/useStore'
 import StatusBadge from '@/components/StatusBadge'
@@ -8,9 +8,10 @@ interface PageCardProps {
   page: Page
   projectId: string
   viewerRole?: MemberRole
+  leaderAssigned?: boolean
 }
 
-export default function PageCard({ page, projectId, viewerRole }: PageCardProps) {
+export default function PageCard({ page, projectId, viewerRole, leaderAssigned }: PageCardProps) {
   const getMember = useStore((s) => s.getMember)
   const assignee = page.assigneeId ? getMember(page.assigneeId) : null
   const today = new Date().toISOString().split('T')[0]
@@ -26,8 +27,14 @@ export default function PageCard({ page, projectId, viewerRole }: PageCardProps)
   return (
     <Link
       to={`/project/${projectId}/page/${page.id}`}
-      className="card-hover block rounded-xl overflow-hidden bg-dark-card"
+      className="card-hover block rounded-xl overflow-hidden bg-dark-card relative"
     >
+      {leaderAssigned && (
+        <div className="absolute top-2 left-2 z-10 flex items-center gap-1 bg-[#e94560] text-white text-xs px-1.5 py-0.5 rounded-full font-medium">
+          <Star className="w-3 h-3" />
+          <span>组长指派</span>
+        </div>
+      )}
       <div className="relative">
         <img
           src={page.originalImage}
