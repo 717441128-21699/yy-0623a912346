@@ -39,6 +39,7 @@ export default function PageWorkspace() {
   const [selectedMemberId, setSelectedMemberId] = useState('')
   const [tlMemberFilter, setTlMemberFilter] = useState('all')
   const [tlActionFilter, setTlActionFilter] = useState<string>('all')
+  const [tlStageFilter, setTlStageFilter] = useState<string>('all')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const reuploadRef = useRef<HTMLInputElement>(null)
   const leaderReuploadRef = useRef<HTMLInputElement>(null)
@@ -341,14 +342,31 @@ export default function PageWorkspace() {
     let filteredLogs = logs
     if (tlMemberFilter !== 'all') filteredLogs = filteredLogs.filter(l => l.memberId === tlMemberFilter)
     if (tlActionFilter !== 'all') filteredLogs = filteredLogs.filter(l => l.action === tlActionFilter)
+    if (tlStageFilter !== 'all') {
+      const stageMap: Record<string, TaskAction[]> = {
+        '翻译': ['claimed', 'submitted', 'rejected', 'assign_by_leader', 'reclaimed_by_leader', 'sent_back_by_leader'],
+        '校对': ['claimed', 'approved', 'rejected', 'comment_added', 'assign_by_leader', 'reclaimed_by_leader', 'sent_back_by_leader'],
+        '嵌字': ['claimed', 'typeset_uploaded', 'typeset_reuploaded', 'assign_by_leader', 'reclaimed_by_leader', 'sent_back_by_leader'],
+      }
+      const allowed = stageMap[tlStageFilter] ?? []
+      filteredLogs = filteredLogs.filter(l => allowed.includes(l.action))
+    }
 
-    const exportCSV = (csvLogs: TaskLog[]) => {
+    const exportCSV = (logs: TaskLog[]) => {
+      const conditions = []
+      if (tlMemberFilter !== 'all') {
+        const memberName = store.getMember(tlMemberFilter)?.name ?? tlMemberFilter
+        conditions.push(`成员:${memberName}`)
+      }
+      if (tlActionFilter !== 'all') conditions.push(`操作:${ACTION_LABELS[tlActionFilter as TaskAction]}`)
+      if (tlStageFilter !== 'all') conditions.push(`环节:${tlStageFilter}`)
       const header = '页面ID,操作者,操作,备注,时间'
-      const rows = csvLogs.map(l => {
+      const rows = logs.map(l => {
         const name = LEADER_ACTIONS.has(l.action) ? '组长' : store.getMember(l.memberId)?.name ?? '未知'
         return `${l.pageId},${name},${ACTION_LABELS[l.action]},${l.detail ?? ''},${l.timestamp}`
       })
-      const csv = '\uFEFF' + header + '\n' + rows.join('\n')
+      const condLine = conditions.length > 0 ? `筛选条件,${conditions.join(';')}\n` : ''
+      const csv = '\uFEFF' + condLine + header + '\n' + rows.join('\n')
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -382,6 +400,13 @@ export default function PageWorkspace() {
             {actionTypes.map(a => (
               <option key={a} value={a}>{ACTION_LABELS[a]}</option>
             ))}
+          </select>
+          <select value={tlStageFilter} onChange={e => setTlStageFilter(e.target.value)}
+            className="bg-dark-secondary text-txt-primary text-xs rounded px-2 py-1 border border-border-dark focus:outline-none">
+            <option value="all">全部环节</option>
+            <option value="翻译">翻译环节</option>
+            <option value="校对">校对环节</option>
+            <option value="嵌字">嵌字环节</option>
           </select>
           <button onClick={() => exportCSV(filteredLogs)}
             className="flex items-center gap-1 text-xs text-accent-blue hover:text-accent-green transition-colors px-2 py-1">

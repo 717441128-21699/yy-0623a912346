@@ -1,6 +1,6 @@
-import { useState, useMemo } from 'react'
-import { Link } from 'react-router-dom'
-import { Users, AlertTriangle, Clock, BarChart3, UserCheck, UserX, Bell, ArrowRight, CalendarX, UserPlus, TrendingUp } from 'lucide-react'
+import { useState, useMemo, useEffect } from 'react'
+import { useNavigate, Link } from 'react-router-dom'
+import { Users, AlertTriangle, Clock, BarChart3, UserCheck, UserX, Bell, ArrowRight, CalendarX, UserPlus, TrendingUp, Download } from 'lucide-react'
 import { useStore } from '@/store/useStore'
 import StatusBadge from '@/components/StatusBadge'
 import { ROLE_LABELS } from '@/types'
@@ -17,6 +17,8 @@ export default function Members() {
   const getBottleneckStats = useStore(s => s.getBottleneckStats)
   const getStuckPagesForReminder = useStore(s => s.getStuckPagesForReminder)
   const getRetrospectiveStats = useStore(s => s.getRetrospectiveStats)
+  const getStageStatuses = useStore(s => s.getStageStatuses)
+  const exportRetrospectiveCSV = useStore(s => s.exportRetrospectiveCSV)
   const switchRole = useStore(s => s.switchRole)
   const getMember = useStore(s => s.getMember)
 
@@ -24,6 +26,7 @@ export default function Members() {
   const [overdueFilter, setOverdueFilter] = useState<OverdueFilter>('all')
   const [roleDropdown, setRoleDropdown] = useState<string | null>(null)
   const [retroProject, setRetroProject] = useState<string>('all')
+  const [retroChapter, setRetroChapter] = useState<string>('all')
 
   const currentUserId = useStore(s => s.currentUserId)
   const currentUser = members.find(m => m.id === currentUserId)
@@ -47,7 +50,21 @@ export default function Members() {
   const bottleneckData = useMemo(() => projects.map(p => ({ name: p.name, ...getBottleneckStats(p.id) })), [projects, getBottleneckStats])
   const maxBottleneck = Math.max(...bottleneckData.flatMap(d => [d.translate, d.proofread, d.typeset]), 1)
 
-  const retroData = useMemo(() => getRetrospectiveStats(retroProject === 'all' ? undefined : retroProject), [getRetrospectiveStats, retroProject])
+  const retroData = useMemo(() => 
+    getRetrospectiveStats(
+      retroProject === 'all' ? undefined : retroProject,
+      retroChapter === 'all' ? undefined : retroChapter
+    ), 
+    [getRetrospectiveStats, retroProject, retroChapter]
+  )
+
+  useEffect(() => {
+    if (retroProject === 'all') {
+      setRetroChapter('all')
+    }
+  }, [retroProject])
+
+  const selectedProject = useMemo(() => projects.find(p => p.id === retroProject), [projects, retroProject])
 
   const allRoles: MemberRole[] = ['leader', 'translator', 'proofreader', 'typesetter']
   const OVERDUE_TABS: { key: OverdueFilter; label: string }[] = [
@@ -62,6 +79,13 @@ export default function Members() {
   const getStatusFilter = (s: PageStatus) => s === 'pending_translate' ? 'pending_translate' : s === 'pending_proofread' ? 'pending_proofread' : 'pending_typeset'
 
   const STAGE_COLORS: Record<string, string> = { '翻译': '#0f3460', '校对': '#16c79a', '嵌字': '#f5a623' }
+
+  const getStageStatus = (stage: string): string => {
+    if (stage === '翻译') return 'translating'
+    if (stage === '校对') return 'proofreading'
+    if (stage === '嵌字') return 'typesetting'
+    return ''
+  }
 
   const ReminderItem = ({ color, icon, title, data, renderRight, renderLink }: any) => (
     <div>
@@ -244,55 +268,114 @@ export default function Members() {
       {isLeader && (
         <section className="animate-fade-in opacity-0" style={{ animationDelay: '0.2s' }}>
           <div className="rounded-lg bg-dark-card p-4">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
               <h2 className="text-lg font-semibold text-txt-primary flex items-center gap-2"><TrendingUp size={18} className="text-accent-blue" /> 复盘统计</h2>
-              <select className="bg-dark-secondary text-txt-primary text-sm rounded-md px-3 py-1.5 border border-border-dark focus:outline-none" value={retroProject} onChange={e => setRetroProject(e.target.value)}>
-                <option value="all">全部项目</option>
-                {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
+              <div className="flex items-center gap-2 flex-wrap">
+                <select className="bg-dark-secondary text-txt-primary text-sm rounded-md px-3 py-1.5 border border-border-dark focus:outline-none" value={retroProject} onChange={e => setRetroProject(e.target.value)}>
+                  <option value="all">全部项目</option>
+                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+                {retroProject !== 'all' && selectedProject && (
+                  <select className="bg-dark-secondary text-txt-primary text-sm rounded-md px-3 py-1.5 border border-border-dark focus:outline-none" value={retroChapter} onChange={e => setRetroChapter(e.target.value)}>
+                    <option value="all">全部章节</option>
+                    {selectedProject.chapters.map(ch => <option key={ch.id} value={ch.id}>{ch.name}</option>)}
+                  </select>
+                )}
+                <button 
+                  onClick={() => {
+                    const csv = exportRetrospectiveCSV(
+                      retroProject === 'all' ? undefined : retroProject,
+                      retroChapter === 'all' ? undefined : retroChapter
+                    )
+                    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+                    const url = URL.createObjectURL(blob)
+                    const a = document.createElement('a')
+                    a.href = url
+                    a.download = `复盘报告_${new Date().toISOString().slice(0,10)}.csv`
+                    a.click()
+                    URL.revokeObjectURL(url)
+                  }}
+                  className="flex items-center gap-1.5 bg-accent-blue hover:bg-accent-blue/80 text-white text-xs px-3 py-1.5 rounded-md transition-colors"
+                >
+                  <Download size={14} /> 导出复盘报告
+                </button>
+              </div>
             </div>
 
             <div className="space-y-6">
               <div>
                 <h3 className="text-sm font-medium text-txt-secondary mb-3">环节平均停留时长</h3>
                 <div className="grid grid-cols-3 gap-3">
-                  {retroData.stageDurations.map(sd => (
-                    <div key={sd.stage} className="rounded-md bg-dark-secondary p-3 text-center" style={{ borderLeft: `3px solid ${STAGE_COLORS[sd.stage] ?? '#888'}` }}>
-                      <div className="text-sm text-txt-secondary mb-1">{sd.stage}</div>
-                      <div className="text-xl font-bold" style={{ color: STAGE_COLORS[sd.stage] ?? '#888' }}>{sd.avgHours}h</div>
-                      <div className="text-xs text-txt-muted mt-1">{sd.count} 个样本</div>
-                    </div>
-                  ))}
+                  {retroData.stageDurations.map(sd => {
+                    const stageStatus = getStageStatus(sd.stage)
+                    const targetProjectId = retroProject === 'all' ? projects[0]?.id : retroProject
+                    return (
+                      <Link 
+                        key={sd.stage}
+                        to={`/project/${targetProjectId}?status=${stageStatus}`}
+                        className="block rounded-md bg-dark-secondary p-3 text-center hover:bg-dark-hover transition-colors cursor-pointer"
+                        style={{ borderLeft: `3px solid ${STAGE_COLORS[sd.stage] ?? '#888'}` }}
+                      >
+                        <div className="text-sm text-txt-secondary mb-1">{sd.stage}</div>
+                        <div className="text-xl font-bold" style={{ color: STAGE_COLORS[sd.stage] ?? '#888' }}>{sd.avgHours}h</div>
+                        <div className="text-xs text-txt-muted mt-1">{sd.count} 个样本</div>
+                      </Link>
+                    )
+                  })}
                 </div>
               </div>
 
               <div>
                 <h3 className="text-sm font-medium text-txt-secondary mb-3">成员积压排行</h3>
                 <div className="space-y-2">
-                  {retroData.memberBacklog.map(mb => (
-                    <Link key={mb.memberId} to={`/project/${projects[0]?.id ?? ''}?member=${mb.memberId}`} className="flex items-center gap-3 rounded-md bg-dark-secondary p-3 hover:bg-dark-hover transition-colors">
-                      <div className="w-8 h-8 rounded-full flex items-center justify-center text-white font-bold text-sm shrink-0" style={{ backgroundColor: ROLE_COLORS[mb.role as MemberRole] ?? '#888' }}>{mb.name[0]}</div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm text-txt-primary">{mb.name}</span>
-                          <span className="text-xs bg-dark-hover text-txt-muted px-1.5 py-0.5 rounded">{mb.role}</span>
+                  {retroData.memberBacklog.map(mb => {
+                    const firstProj = retroProject === 'all' 
+                      ? projects.find(p => p.chapters.some(c => c.pages.some(pg => mb.pageIds.includes(pg.id)))) 
+                      : projects.find(p => p.id === retroProject)
+                    const targetProjId = firstProj?.id ?? projects[0]?.id
+                    const entries = Object.entries(mb.statusPageIds)
+                    const topStatus = entries.sort((a, b) => b[1].length - a[1].length)[0]?.[0]
+                    return (
+                      <Link 
+                        key={mb.memberId}
+                        to={`/project/${targetProjId}${topStatus ? `?status=${topStatus}&` : '?'}member=${mb.memberId}&highlight=${mb.pageIds.join(',')}`}
+                        className="flex items-center gap-3 rounded-md bg-dark-secondary p-3 hover:bg-dark-hover transition-colors"
+                      >
+                        <div className="w-8 h-8 rounded-full flex items-center justify-center text-white font-bold text-sm shrink-0" style={{ backgroundColor: ROLE_COLORS[mb.role as MemberRole] ?? '#888' }}>{mb.name[0]}</div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm text-txt-primary">{mb.name}</span>
+                            <span className="text-xs bg-dark-hover text-txt-muted px-1.5 py-0.5 rounded">{mb.role}</span>
+                          </div>
                         </div>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <div className="w-20 h-2 rounded-full bg-dark-hover overflow-hidden">
-                          <div className="h-full rounded-full bg-accent-red" style={{ width: `${Math.min((mb.activeCount / Math.max(retroData.memberBacklog[0]?.activeCount ?? 1, 1)) * 100, 100)}%` }} />
+                        <div className="flex items-center gap-2 shrink-0">
+                          <div className="w-20 h-2 rounded-full bg-dark-hover overflow-hidden">
+                            <div className="h-full rounded-full bg-accent-red" style={{ width: `${Math.min((mb.activeCount / Math.max(retroData.memberBacklog[0]?.activeCount ?? 1, 1)) * 100, 100)}%` }} />
+                          </div>
+                          <span className="text-sm text-accent-red font-medium">{mb.activeCount}</span>
                         </div>
-                        <span className="text-sm text-accent-red font-medium">{mb.activeCount}</span>
-                      </div>
-                    </Link>
-                  ))}
+                      </Link>
+                    )
+                  })}
                 </div>
               </div>
 
               <div>
-                <h3 className="text-sm font-medium text-txt-secondary mb-3">反复退回页面</h3>
+                <h3 className="text-sm font-medium text-txt-secondary mb-3">退回 ≥ 2 次的页面</h3>
                 {retroData.repeatedRejections.length === 0 ? <p className="text-sm text-txt-muted py-2 text-center">暂无退回记录</p> : (
                   <div className="space-y-2">
+                    {(() => {
+                      const allRejectionIds = retroData.repeatedRejections.map(r => r.pageId).join(',')
+                      const rejProjectId = retroProject === 'all' ? (retroData.repeatedRejections[0]?.projectId ?? projects[0]?.id) : retroProject
+                      return (
+                        <Link 
+                          to={`/project/${rejProjectId}?highlight=${allRejectionIds}`}
+                          className="flex items-center justify-center gap-1.5 bg-dark-secondary hover:bg-dark-hover text-txt-primary text-sm px-3 py-2 rounded-md transition-colors border border-border-dark"
+                        >
+                          <ArrowRight size={14} /> 查看全部退回页面
+                        </Link>
+                      )
+                    })()}
                     {retroData.repeatedRejections.map(rr => (
                       <Link key={rr.pageId} to={`/project/${rr.projectId}/page/${rr.pageId}`} className="flex items-center justify-between rounded-md bg-dark-secondary p-3 hover:bg-dark-hover transition-colors">
                         <span className="text-sm text-txt-primary">{rr.chapterName} · 第 {rr.pageNumber} 页</span>

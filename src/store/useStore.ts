@@ -47,12 +47,14 @@ interface AppState {
   }
   getBottleneckStats: (projectId: string) => { translate: number; proofread: number; typeset: number }
   getMemberTaskCount: (memberId: string) => { active: number; completed: number }
-  getRetrospectiveStats: (projectId?: string) => {
+  getRetrospectiveStats: (projectId?: string, chapterId?: string) => {
     stageDurations: { stage: string; avgHours: number; count: number }[]
-    memberBacklog: { memberId: string; name: string; role: string; activeCount: number; pageIds: string[] }[]
+    memberBacklog: { memberId: string; name: string; role: string; activeCount: number; pageIds: string[]; statusPageIds: Record<string, string[]> }[]
     repeatedRejections: { pageId: string; pageNumber: number; chapterName: string; projectId: string; rejectionCount: number }[]
   }
   getFilteredLogs: (filters: { memberId?: string; action?: TaskAction; projectId?: string; stage?: string }) => TaskLog[]
+  getStageStatuses: (stage: string) => PageStatus[]
+  exportRetrospectiveCSV: (projectId?: string, chapterId?: string) => string
 
   setCurrentUser: (id: string) => void
   switchRole: (memberId: string, role: MemberRole) => void
@@ -741,8 +743,11 @@ export const useStore = create<AppState>((set, get) => ({
     return { active, completed: participatedPageIds.size }
   },
 
-  getRetrospectiveStats: (projectId) => {
-    const projects = projectId ? [get().projects.find(p => p.id === projectId)].filter(Boolean) as Project[] : get().projects
+  getRetrospectiveStats: (projectId, chapterId) => {
+    let projects = projectId ? [get().projects.find(p => p.id === projectId)].filter(Boolean) as Project[] : get().projects
+    if (chapterId) {
+      projects = projects.map(p => ({ ...p, chapters: p.chapters.filter(c => c.id === chapterId) })).filter(p => p.chapters.length > 0)
+    }
     const taskLogs = get().taskLogs
     const stageDurations: { stage: string; avgHours: number; count: number }[] = []
     const stageActions: Record<string, { enter: TaskAction; exit: TaskAction }> = {
@@ -770,18 +775,23 @@ export const useStore = create<AppState>((set, get) => ({
       }
     }
 
-    const memberBacklog: { memberId: string; name: string; role: string; activeCount: number; pageIds: string[] }[] = []
+    const memberBacklog: { memberId: string; name: string; role: string; activeCount: number; pageIds: string[]; statusPageIds: Record<string, string[]> }[] = []
     for (const member of get().members) {
       if (member.role === 'leader') continue
       const activePages: string[] = []
+      const statusPageIds: Record<string, string[]> = {}
       for (const project of projects) {
         for (const ch of project.chapters) {
           for (const page of ch.pages) {
-            if (page.assigneeId === member.id && page.status !== 'completed') activePages.push(page.id)
+            if (page.assigneeId === member.id && page.status !== 'completed') {
+              activePages.push(page.id)
+              if (!statusPageIds[page.status]) statusPageIds[page.status] = []
+              statusPageIds[page.status].push(page.id)
+            }
           }
         }
       }
-      memberBacklog.push({ memberId: member.id, name: member.name, role: ROLE_LABELS[member.role], activeCount: activePages.length, pageIds: activePages })
+      memberBacklog.push({ memberId: member.id, name: member.name, role: ROLE_LABELS[member.role], activeCount: activePages.length, pageIds: activePages, statusPageIds })
     }
     memberBacklog.sort((a, b) => b.activeCount - a.activeCount)
 
@@ -790,7 +800,7 @@ export const useStore = create<AppState>((set, get) => ({
       for (const ch of project.chapters) {
         for (const page of ch.pages) {
           const rejectionCount = taskLogs.filter(l => l.pageId === page.id && l.action === 'rejected').length
-          if (rejectionCount >= 1) {
+          if (rejectionCount >= 2) {
             repeatedRejections.push({ pageId: page.id, pageNumber: page.pageNumber, chapterName: ch.name, projectId: project.id, rejectionCount })
           }
         }
@@ -799,6 +809,15 @@ export const useStore = create<AppState>((set, get) => ({
     repeatedRejections.sort((a, b) => b.rejectionCount - a.rejectionCount)
 
     return { stageDurations, memberBacklog, repeatedRejections }
+  },
+
+  getStageStatuses: (stage) => {
+    const map: Record<string, PageStatus[]> = {
+      '翻译': ['pending_translate', 'translating'],
+      '校对': ['pending_proofread', 'proofreading'],
+      '嵌字': ['pending_typeset', 'typesetting'],
+    }
+    return map[stage] ?? []
   },
 
   getFilteredLogs: (filters) => {
@@ -816,6 +835,28 @@ export const useStore = create<AppState>((set, get) => ({
       logs = logs.filter(l => allowed.includes(l.action))
     }
     return logs.sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+  },
+
+  exportRetrospectiveCSV: (projectId, chapterId) => {
+    const { stageDurations, memberBacklog, repeatedRejections } = get().getRetrospectiveStats(projectId, chapterId)
+    const projectName = projectId ? get().getProject(projectId)?.name ?? '' : '全部项目'
+    const chapterName = chapterId ? get().getProject(projectId!)?.chapters.find(c => c.id === chapterId)?.name ?? '' : '全部章节'
+    let csv = '\uFEFF'
+    csv += `复盘报告,导出时间,${new Date().toLocaleString('zh-CN')}\n`
+    csv += `范围,${projectName},${chapterName}\n\n`
+    csv += '【环节平均停留时长】\n'
+    csv += '环节,平均耗时(小时),样本数\n'
+    for (const sd of stageDurations) csv += `${sd.stage},${sd.avgHours},${sd.count}\n`
+    csv += '\n【成员积压排行】\n'
+    csv += '成员,角色,进行中数量,积压页面ID\n'
+    for (const mb of memberBacklog) csv += `${mb.name},${mb.role},${mb.activeCount},${mb.pageIds.join(';')}\n`
+    csv += '\n【反复退回页面】\n'
+    csv += '项目,章节,页码,退回次数,页面ID\n'
+    for (const rr of repeatedRejections) {
+      const pName = get().getProject(rr.projectId)?.name ?? ''
+      csv += `${pName},${rr.chapterName},第${rr.pageNumber}页,${rr.rejectionCount},${rr.pageId}\n`
+    }
+    return csv
   },
 
   setCurrentUser: (id) => set({ currentUserId: id }),
